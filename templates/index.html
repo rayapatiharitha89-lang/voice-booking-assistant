@@ -1,0 +1,219 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Booking Line</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&family=Work+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+
+<main class="call">
+  <header class="call__header">
+    <p class="call__eyebrow">Booking Line</p>
+    <h1 class="call__title">Tell it what to book.</h1>
+    <p class="call__status" id="status">Tap the mic and start talking</p>
+  </header>
+
+  <section class="transcript" id="transcript" aria-live="polite"></section>
+
+  <div class="controls">
+    <button class="mic" id="micBtn" aria-label="Start talking">
+      <svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="1.8">
+        <rect x="8" y="2" width="8" height="13" rx="4"/>
+        <path d="M5 11a7 7 0 0 0 14 0"/>
+        <path d="M12 18v4"/>
+        <path d="M9 22h6"/>
+      </svg>
+    </button>
+    <button class="reset" id="resetBtn">Start over</button>
+    <a class="reset" href="/history">View booking history</a>
+  </div>
+
+  <div class="booking-card" id="bookingCard" hidden>
+    <p class="booking-card__label">Confirmed</p>
+    <dl id="bookingDetails"></dl>
+  </div>
+</main>
+
+<script>
+const statusEl = document.getElementById('status');
+const transcriptEl = document.getElementById('transcript');
+const micBtn = document.getElementById('micBtn');
+const resetBtn = document.getElementById('resetBtn');
+const bookingCard = document.getElementById('bookingCard');
+const bookingDetails = document.getElementById('bookingDetails');
+
+const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+let recognition = null;
+let callActive = false;
+let gotResult = false;
+
+function addBubble(role, text) {
+  const bubble = document.createElement('div');
+  bubble.className = 'bubble bubble--' + role;
+  bubble.textContent = text;
+  transcriptEl.appendChild(bubble);
+  transcriptEl.scrollTop = transcriptEl.scrollHeight;
+}
+
+function setStatus(text) {
+  statusEl.textContent = text;
+}
+
+function startListening() {
+  if (!recognition || !callActive) return;
+  gotResult = false;
+  setStatus('Listening…');
+  try {
+    recognition.start();
+  } catch (err) {
+  }
+}
+
+let femaleVoice = null;
+
+function pickFemaleVoice() {
+  if (!('speechSynthesis' in window)) return null;
+  const voices = window.speechSynthesis.getVoices();
+  if (!voices.length) return null;
+  const preferredNames = ['female', 'zira', 'jenny', 'aria', 'samantha', 'victoria', 'susan', 'google us english', 'google uk english female'];
+  const byName = voices.find(v => preferredNames.some(name => v.name.toLowerCase().includes(name)));
+  if (byName) return byName;
+  const english = voices.find(v => v.lang && v.lang.startsWith('en'));
+  return english || voices[0];
+}
+
+if ('speechSynthesis' in window) {
+  femaleVoice = pickFemaleVoice();
+  window.speechSynthesis.onvoiceschanged = () => {
+    femaleVoice = pickFemaleVoice();
+  };
+}
+
+function speak(text) {
+  if (!('speechSynthesis' in window)) {
+    startListening();
+    return;
+  }
+  window.speechSynthesis.cancel();
+  const utter = new SpeechSynthesisUtterance(text);
+  utter.rate = 1.0;
+  if (femaleVoice) utter.voice = femaleVoice;
+  utter.onend = () => {
+    if (callActive) startListening();
+  };
+  window.speechSynthesis.speak(utter);
+}
+
+async function sendMessage(text) {
+  addBubble('user', text);
+  setStatus('Thinking…');
+  try {
+    const res = await fetch('/api/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: text })
+    });
+    const data = await res.json();
+    if (data.error) {
+      addBubble('assistant', "Something went wrong on my end: " + data.error);
+      if (callActive) startListening();
+      return;
+    }
+    addBubble('assistant', data.reply);
+    speak(data.reply);
+    if (data.booking) {
+      showBooking(data.booking);
+    }
+  } catch (err) {
+    addBubble('assistant', 'Lost connection to the server.');
+    if (callActive) startListening();
+  }
+}
+
+function showBooking(booking) {
+  bookingDetails.innerHTML = '';
+  Object.entries(booking).forEach(([key, value]) => {
+    const dt = document.createElement('dt');
+    dt.textContent = key;
+    const dd = document.createElement('dd');
+    dd.textContent = typeof value === 'string' ? value : JSON.stringify(value);
+    bookingDetails.appendChild(dt);
+    bookingDetails.appendChild(dd);
+  });
+  bookingCard.hidden = false;
+}
+
+if (SpeechRecognition) {
+  recognition = new SpeechRecognition();
+  recognition.continuous = false;
+  recognition.interimResults = false;
+  recognition.lang = 'en-US';
+
+  recognition.onresult = (event) => {
+    gotResult = true;
+    const text = event.results[0][0].transcript.trim();
+    if (text) {
+      sendMessage(text);
+    } else {
+      startListening();
+    }
+  };
+
+  recognition.onerror = (event) => {
+    if (callActive && event.error === 'no-speech') {
+      setTimeout(startListening, 300);
+    } else if (callActive) {
+      setStatus('Didn\'t catch that — listening again…');
+      setTimeout(startListening, 800);
+    }
+  };
+
+  recognition.onend = () => {
+    if (callActive && !gotResult) {
+      setTimeout(startListening, 300);
+    }
+  };
+} else {
+  setStatus('Your browser doesn\'t support voice input — try Chrome or Safari');
+  micBtn.disabled = true;
+}
+
+function endCall() {
+  callActive = false;
+  micBtn.classList.remove('mic--listening');
+  micBtn.setAttribute('aria-label', 'Start talking');
+  if (recognition) {
+    try { recognition.stop(); } catch (err) {}
+  }
+  window.speechSynthesis.cancel();
+  setStatus('Tap the mic and start talking');
+}
+
+micBtn.addEventListener('click', () => {
+  if (!recognition) return;
+  if (callActive) {
+    endCall();
+  } else {
+    callActive = true;
+    micBtn.classList.add('mic--listening');
+    micBtn.setAttribute('aria-label', 'End call');
+    const greeting = 'Hi! How can I help you today?';
+    addBubble('assistant', greeting);
+    speak(greeting);
+  }
+});
+
+resetBtn.addEventListener('click', async () => {
+  endCall();
+  await fetch('/api/reset', { method: 'POST' });
+  transcriptEl.innerHTML = '';
+  bookingCard.hidden = true;
+  setStatus('Tap the mic and start talking');
+});
+</script>
+</body>
+</html>
